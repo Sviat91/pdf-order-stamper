@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+*.log
+
+# Backend — never commit credentials or user data
+backend/.env
+backend/users.json
+backend/uploads/
+
+# Frontend build output
+frontend/dist/
+
+# Internal planning files
+handoff/
