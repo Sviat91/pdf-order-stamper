@@ -7,7 +7,7 @@ import UserManager from './UserManager.jsx';
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
-const API = 'http://localhost:3001';
+const API = import.meta.env.VITE_API_URL ?? '';
 
 function getStoredUser() {
   try { return JSON.parse(localStorage.getItem('auth_user') || 'null'); } catch { return null; }

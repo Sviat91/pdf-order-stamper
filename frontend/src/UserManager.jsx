@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const API = 'http://localhost:3001';
+const API = import.meta.env.VITE_API_URL ?? '';
 
 export default function UserManager({ token, onClose }) {
   const [users, setUsers]     = useState([]);
