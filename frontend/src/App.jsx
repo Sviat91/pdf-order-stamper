@@ -236,7 +236,6 @@ export default function App() {
 
   // ── Delete saved file ──────────────────────────────────────
   async function handleDeleteFile(filename) {
-    if (!confirm(`Delete "${filename}"?`)) return;
     const res = await fetch(`${API}/api/files/${encodeURIComponent(filename)}`, {
       method: 'DELETE', headers: authH,
     });
