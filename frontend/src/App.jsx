@@ -200,10 +200,7 @@ export default function App() {
       const pdfX = textPos.x / viewport.scale;
       const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
 
-      const srcDoc  = await PDFDocument.load(pdfBytes.slice(0), { ignoreEncryption: true });
-      const pdfDoc  = await PDFDocument.create();
-      const copied  = await pdfDoc.copyPages(srcDoc, srcDoc.getPageIndices());
-      copied.forEach(p => pdfDoc.addPage(p));
+      const pdfDoc = await PDFDocument.load(pdfBytes.slice(0), { ignoreEncryption: true });
       const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const page   = pdfDoc.getPages()[currentPage - 1];
 
@@ -217,7 +214,7 @@ export default function App() {
       }
       page.drawText(activeLabel, { x: pdfX, y: pdfY, size: fontSize, font, color: hexToRgb01(textColor) });
 
-      const bytes   = await pdfDoc.save();
+      const bytes   = await pdfDoc.save({ useObjectStreams: false });
       const safeName = activeLabel.replace(/[^a-zA-Z0-9_\-. ]/g, '_');
       const newFile  = new File([bytes], `${safeName}.pdf`, { type: 'application/pdf' });
 
