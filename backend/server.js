@@ -4,6 +4,9 @@ const multer  = require('multer');
 const cors    = require('cors');
 const path    = require('path');
 const fs      = require('fs');
+const os      = require('os');
+const crypto  = require('crypto');
+const { spawn } = require('child_process');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 
@@ -102,6 +105,42 @@ const upload = multer({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
     filename:    (_req, file, cb) => cb(null, file.originalname),
   }),
+});
+
+// In-memory upload for decrypt (never touches UPLOADS_DIR)
+const memUpload = multer({ storage: multer.memoryStorage() });
+
+// Decrypt an encrypted/restricted PDF with qpdf, return clean bytes
+app.post('/api/decrypt', requireAuth, memUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const id     = crypto.randomBytes(8).toString('hex');
+  const tmpIn  = path.join(os.tmpdir(), `dec-${id}-in.pdf`);
+  const tmpOut = path.join(os.tmpdir(), `dec-${id}-out.pdf`);
+  const cleanup = () => { for (const f of [tmpIn, tmpOut]) { try { fs.unlinkSync(f); } catch (_) {} } };
+
+  try {
+    fs.writeFileSync(tmpIn, req.file.buffer);
+  } catch (e) {
+    cleanup();
+    return res.status(500).json({ error: 'Could not stage file' });
+  }
+
+  const qpdf = spawn('qpdf', ['--decrypt', tmpIn, tmpOut]);
+  qpdf.on('error', () => { cleanup(); res.status(500).json({ error: 'qpdf is not available' }); });
+  qpdf.on('close', (code) => {
+    // qpdf: 0 = success, 3 = success with warnings
+    if (code === 0 || code === 3) {
+      try {
+        const out = fs.readFileSync(tmpOut);
+        res.type('application/pdf').send(out);
+      } catch (e) {
+        res.status(500).json({ error: 'Decrypt produced no output' });
+      }
+    } else {
+      res.status(500).json({ error: 'Decrypt failed' });
+    }
+    cleanup();
+  });
 });
 
 function cleanupOldFiles() {

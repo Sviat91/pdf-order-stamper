@@ -9,6 +9,11 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 
 const API = import.meta.env.VITE_API_URL ?? '';
 
+// Vertical offset from the overlay label's top to the text baseline, as a
+// fraction of fontSize (Helvetica cap-height). Calibrated so the saved stamp
+// lands where the preview label sits.
+const BASELINE_K = 0.72;
+
 function getStoredUser() {
   try { return JSON.parse(localStorage.getItem('auth_user') || 'null'); } catch { return null; }
 }
@@ -65,6 +70,7 @@ export default function App() {
   const [files, setFiles]       = useState([]);
   const [saving, setSaving]     = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [savedAt, setSavedAt]   = useState(0);
 
   // ── Refs ───────────────────────────────────────────────────
   const canvasRef    = useRef(null);
@@ -83,6 +89,13 @@ export default function App() {
   }, [token]);
 
   useEffect(() => { if (currentUser) fetchFiles(); }, [fetchFiles, currentUser]);
+
+  // ── Clear "Saved ✓" indicator after 2s ─────────────────────
+  useEffect(() => {
+    if (!savedAt) return;
+    const t = setTimeout(() => setSavedAt(0), 2000);
+    return () => clearTimeout(t);
+  }, [savedAt]);
 
   // ── Persist style ──────────────────────────────────────────
   useEffect(() => localStorage.setItem('stamp_fontSize', fontSize), [fontSize]);
@@ -122,11 +135,32 @@ export default function App() {
     return () => { cancelled = true; };
   }, [pdfBytesToRender]);
 
+  // Returns clean (decrypted) bytes — only contacts the backend when the PDF is encrypted
+  async function ensureDecrypted(ab) {
+    try {
+      await PDFDocument.load(ab);
+      return ab;                                  // not encrypted → use as-is
+    } catch (e) {
+      if (!/encrypted/i.test(e.message || '')) throw e;
+      const fd = new FormData();
+      fd.append('file', new File([ab], 'in.pdf', { type: 'application/pdf' }));
+      const res = await fetch(`${API}/api/decrypt`, { method: 'POST', headers: authH, body: fd });
+      if (res.status === 401) { handleLogout(); throw new Error('unauthorized'); }
+      if (!res.ok) throw new Error('Could not decrypt this PDF');
+      return await res.arrayBuffer();
+    }
+  }
+
   async function loadAndRenderPDF(file) {
-    const ab = await file.arrayBuffer();
-    setPdfBytes(ab);
-    setPdfBytesToRender(ab.slice(0));
-    setActiveLabel(null);
+    try {
+      const clean = await ensureDecrypted(await file.arrayBuffer());
+      setPdfBytes(clean);
+      setPdfBytesToRender(clean.slice(0));
+      setActiveLabel(null);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to open PDF: ' + err.message);
+    }
   }
 
   // ── Drop zone ──────────────────────────────────────────────
@@ -194,46 +228,29 @@ export default function App() {
   }
 
   async function handleSave() {
-    if (!pdfBytes || !activeLabel || !viewport || !pdfDocRef.current) return;
+    if (!pdfBytes || !activeLabel || !viewport) return;
     setSaving(true);
     try {
-      // pdf.js already decrypts the source (preview proves it). Rebuild a fresh,
-      // unencrypted PDF from rendered page images and draw the stamp on top —
-      // works for both encrypted and normal PDFs.
-      const srcDoc = pdfDocRef.current;
-      const out    = await PDFDocument.create();
-      const font   = await out.embedFont(StandardFonts.Helvetica);
-      const EXPORT_SCALE = 2.5; // ~180 DPI render quality
+      // pdfBytes is already decrypted, so draw vector text directly onto the
+      // original PDF — output stays selectable/copyable and content is unchanged.
+      const pdfX = textPos.x / viewport.scale;
+      const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * BASELINE_K;
 
-      for (let i = 1; i <= srcDoc.numPages; i++) {
-        const pg   = await srcDoc.getPage(i);
-        const base = pg.getViewport({ scale: 1 });
-        const vp   = pg.getViewport({ scale: EXPORT_SCALE });
+      const pdfDoc = await PDFDocument.load(pdfBytes.slice(0));
+      const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const page   = pdfDoc.getPages()[currentPage - 1];
 
-        const c = document.createElement('canvas');
-        c.width = vp.width; c.height = vp.height;
-        await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-
-        const png  = await out.embedPng(c.toDataURL('image/png'));
-        const page = out.addPage([base.width, base.height]);
-        page.drawImage(png, { x: 0, y: 0, width: base.width, height: base.height });
-
-        if (i === currentPage) {
-          const pdfX = textPos.x / viewport.scale;
-          const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
-          if (showBg) {
-            const tw = font.widthOfTextAtSize(activeLabel, fontSize);
-            page.drawRectangle({
-              x: pdfX - 2, y: pdfY - fontSize * 0.2,
-              width: tw + 4, height: fontSize * 1.3,
-              color: hexToRgb01(bgColor), borderWidth: 0,
-            });
-          }
-          page.drawText(activeLabel, { x: pdfX, y: pdfY, size: fontSize, font, color: hexToRgb01(textColor) });
-        }
+      if (showBg) {
+        const tw = font.widthOfTextAtSize(activeLabel, fontSize);
+        page.drawRectangle({
+          x: pdfX - 2, y: pdfY - fontSize * 0.2,
+          width: tw + 4, height: fontSize * 1.3,
+          color: hexToRgb01(bgColor), borderWidth: 0,
+        });
       }
+      page.drawText(activeLabel, { x: pdfX, y: pdfY, size: fontSize, font, color: hexToRgb01(textColor) });
 
-      const bytes   = await out.save();
+      const bytes    = await pdfDoc.save();
       const safeName = activeLabel.replace(/[^a-zA-Z0-9_\-. ]/g, '_');
       const newFile  = new File([bytes], `${safeName}.pdf`, { type: 'application/pdf' });
 
@@ -243,11 +260,8 @@ export default function App() {
       if (res.status === 401) { handleLogout(); return; }
       if (!res.ok) throw new Error('Upload failed');
 
-      const savedAb = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      setPdfBytes(savedAb);
-      setPdfBytesToRender(savedAb.slice(0));
-      setActiveLabel(null);
-      setTextLabel('');
+      // Keep the preview and overlay label exactly as-is (no reload → no blink).
+      setSavedAt(Date.now());
       await fetchFiles();
     } catch (err) {
       console.error(err);
@@ -280,9 +294,9 @@ export default function App() {
     try {
       const res = await fetch(`${API}/files/${encodeURIComponent(filename)}`, { headers: authH });
       if (res.status === 401) { handleLogout(); return; }
-      const ab = await res.arrayBuffer();
-      setPdfBytes(ab);
-      setPdfBytesToRender(ab.slice(0));
+      const clean = await ensureDecrypted(await res.arrayBuffer());
+      setPdfBytes(clean);
+      setPdfBytesToRender(clean.slice(0));
       setActiveLabel(null);
       setTextLabel('');
     } catch (err) { console.error('Failed to open:', err); }
@@ -317,6 +331,7 @@ export default function App() {
               </button>
               <button onClick={() => fileInputRef.current?.click()} className="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-2 rounded font-medium transition-colors whitespace-nowrap text-sm">📂 Load</button>
               <button onClick={handleClear} className="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-2 rounded font-medium transition-colors whitespace-nowrap text-sm">✕ Clear</button>
+              {savedAt > 0 && <span className="text-emerald-400 text-sm font-medium whitespace-nowrap">Saved ✓</span>}
             </div>
             {/* Row 2: style + page nav */}
             <div className="flex items-center gap-4 flex-wrap text-sm">
@@ -386,7 +401,7 @@ export default function App() {
                     position: 'absolute', left: textPos.x, top: textPos.y,
                     cursor: isDragging ? 'grabbing' : 'grab',
                     userSelect: 'none', whiteSpace: 'nowrap',
-                    fontSize: `${fontSize * (viewport?.scale ?? 1)}px`, lineHeight: 1.3, color: textColor,
+                    fontSize: `${fontSize * (viewport?.scale ?? 1)}px`, lineHeight: 1, color: textColor,
                     backgroundColor: showBg ? bgColor : 'rgba(0,0,0,0)',
                     padding: showBg ? '1px 4px' : '0',
                     borderRadius: showBg ? '3px' : '0',
