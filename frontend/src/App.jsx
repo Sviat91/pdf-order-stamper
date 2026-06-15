@@ -200,7 +200,7 @@ export default function App() {
       const pdfX = textPos.x / viewport.scale;
       const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
 
-      const pdfDoc = await PDFDocument.load(pdfBytes.slice(0));
+      const pdfDoc = await PDFDocument.load(pdfBytes.slice(0), { ignoreEncryption: true });
       const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const page   = pdfDoc.getPages()[currentPage - 1];
 
