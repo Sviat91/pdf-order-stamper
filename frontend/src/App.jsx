@@ -194,27 +194,46 @@ export default function App() {
   }
 
   async function handleSave() {
-    if (!pdfBytes || !activeLabel || !viewport) return;
+    if (!pdfBytes || !activeLabel || !viewport || !pdfDocRef.current) return;
     setSaving(true);
     try {
-      const pdfX = textPos.x / viewport.scale;
-      const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
+      // pdf.js already decrypts the source (preview proves it). Rebuild a fresh,
+      // unencrypted PDF from rendered page images and draw the stamp on top —
+      // works for both encrypted and normal PDFs.
+      const srcDoc = pdfDocRef.current;
+      const out    = await PDFDocument.create();
+      const font   = await out.embedFont(StandardFonts.Helvetica);
+      const EXPORT_SCALE = 2.5; // ~180 DPI render quality
 
-      const pdfDoc = await PDFDocument.load(pdfBytes.slice(0), { ignoreEncryption: true });
-      const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const page   = pdfDoc.getPages()[currentPage - 1];
+      for (let i = 1; i <= srcDoc.numPages; i++) {
+        const pg   = await srcDoc.getPage(i);
+        const base = pg.getViewport({ scale: 1 });
+        const vp   = pg.getViewport({ scale: EXPORT_SCALE });
 
-      if (showBg) {
-        const tw = font.widthOfTextAtSize(activeLabel, fontSize);
-        page.drawRectangle({
-          x: pdfX - 2, y: pdfY - fontSize * 0.2,
-          width: tw + 4, height: fontSize * 1.3,
-          color: hexToRgb01(bgColor), borderWidth: 0,
-        });
+        const c = document.createElement('canvas');
+        c.width = vp.width; c.height = vp.height;
+        await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+
+        const png  = await out.embedPng(c.toDataURL('image/png'));
+        const page = out.addPage([base.width, base.height]);
+        page.drawImage(png, { x: 0, y: 0, width: base.width, height: base.height });
+
+        if (i === currentPage) {
+          const pdfX = textPos.x / viewport.scale;
+          const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
+          if (showBg) {
+            const tw = font.widthOfTextAtSize(activeLabel, fontSize);
+            page.drawRectangle({
+              x: pdfX - 2, y: pdfY - fontSize * 0.2,
+              width: tw + 4, height: fontSize * 1.3,
+              color: hexToRgb01(bgColor), borderWidth: 0,
+            });
+          }
+          page.drawText(activeLabel, { x: pdfX, y: pdfY, size: fontSize, font, color: hexToRgb01(textColor) });
+        }
       }
-      page.drawText(activeLabel, { x: pdfX, y: pdfY, size: fontSize, font, color: hexToRgb01(textColor) });
 
-      const bytes   = await pdfDoc.save({ useObjectStreams: false });
+      const bytes   = await out.save();
       const safeName = activeLabel.replace(/[^a-zA-Z0-9_\-. ]/g, '_');
       const newFile  = new File([bytes], `${safeName}.pdf`, { type: 'application/pdf' });
 
