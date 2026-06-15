@@ -47,7 +47,10 @@ export default function App() {
   // ── Label ──────────────────────────────────────────────────
   const [textLabel, setTextLabel]     = useState('');
   const [activeLabel, setActiveLabel] = useState(null);
-  const [textPos, setTextPos]         = useState({ x: 50, y: 50 });
+  const [textPos, setTextPos]         = useState(() => {
+    try { return JSON.parse(localStorage.getItem('stamp_textPos')) || { x: 50, y: 50 }; }
+    catch { return { x: 50, y: 50 }; }
+  });
   const [isDragging, setIsDragging]   = useState(false);
   const [dragOffset, setDragOffset]   = useState({ x: 0, y: 0 });
   const [viewport, setViewport]       = useState(null);
@@ -152,7 +155,6 @@ export default function App() {
   function handleAddText() {
     if (!textLabel.trim() || !viewport) return;
     setActiveLabel(textLabel.trim());
-    setTextPos({ x: 50, y: 50 });
   }
 
   function handleLabelMouseDown(e) {
@@ -172,7 +174,18 @@ export default function App() {
     });
   }
 
-  function handleMouseUp() { setIsDragging(false); }
+  function handleMouseUp() {
+    setIsDragging(false);
+    localStorage.setItem('stamp_textPos', JSON.stringify(textPos));
+  }
+
+  // ── Clear ──────────────────────────────────────────────────
+  function handleClear() {
+    setPdfBytes(null); setPdfBytesToRender(null);
+    pdfDocRef.current = null;
+    setActiveLabel(null); setTextLabel(''); setViewport(null);
+    setCurrentPage(1); setTotalPages(0);
+  }
 
   // ── Save ───────────────────────────────────────────────────
   function hexToRgb01(hex) {
@@ -185,7 +198,7 @@ export default function App() {
     setSaving(true);
     try {
       const pdfX = textPos.x / viewport.scale;
-      const pdfY = (viewport.height - textPos.y) / viewport.scale;
+      const pdfY = (viewport.height - textPos.y) / viewport.scale - fontSize * 0.72;
 
       const pdfDoc = await PDFDocument.load(pdfBytes.slice(0));
       const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -211,10 +224,11 @@ export default function App() {
       if (res.status === 401) { handleLogout(); return; }
       if (!res.ok) throw new Error('Upload failed');
 
-      setPdfBytes(null); setPdfBytesToRender(null);
-      pdfDocRef.current = null;
-      setActiveLabel(null); setTextLabel(''); setViewport(null);
-      setCurrentPage(1); setTotalPages(0);
+      const savedAb = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      setPdfBytes(savedAb);
+      setPdfBytesToRender(savedAb.slice(0));
+      setActiveLabel(null);
+      setTextLabel('');
       await fetchFiles();
     } catch (err) {
       console.error(err);
@@ -240,6 +254,19 @@ export default function App() {
       method: 'DELETE', headers: authH,
     });
     if (res.ok) fetchFiles();
+  }
+
+  // ── Open saved file in preview ─────────────────────────────
+  async function handleOpenFile(filename) {
+    try {
+      const res = await fetch(`${API}/files/${encodeURIComponent(filename)}`, { headers: authH });
+      if (res.status === 401) { handleLogout(); return; }
+      const ab = await res.arrayBuffer();
+      setPdfBytes(ab);
+      setPdfBytesToRender(ab.slice(0));
+      setActiveLabel(null);
+      setTextLabel('');
+    } catch (err) { console.error('Failed to open:', err); }
   }
 
   // ── Auth gate ──────────────────────────────────────────────
@@ -269,6 +296,8 @@ export default function App() {
                 className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-medium transition-colors whitespace-nowrap">
                 {saving ? 'Saving…' : 'Save & Upload'}
               </button>
+              <button onClick={() => fileInputRef.current?.click()} className="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-2 rounded font-medium transition-colors whitespace-nowrap text-sm">📂 Load</button>
+              <button onClick={handleClear} className="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-2 rounded font-medium transition-colors whitespace-nowrap text-sm">✕ Clear</button>
             </div>
             {/* Row 2: style + page nav */}
             <div className="flex items-center gap-4 flex-wrap text-sm">
@@ -326,12 +355,11 @@ export default function App() {
               </svg>
               <p className="text-gray-300 text-lg font-medium mb-1">Drop a PDF here</p>
               <p className="text-gray-500 text-sm">or click to browse</p>
-              <input ref={fileInputRef} type="file" accept="application/pdf,.pdf"
-                className="hidden" onChange={handleFileInput} />
             </div>
           ) : (
             <div ref={overlayRef} style={{ position: 'relative', overflow: 'auto' }} className="h-full"
-              onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
+              onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+              onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
               <canvas ref={canvasRef} className="block" />
               {activeLabel && (
                 <div onMouseDown={handleLabelMouseDown}
@@ -339,7 +367,7 @@ export default function App() {
                     position: 'absolute', left: textPos.x, top: textPos.y,
                     cursor: isDragging ? 'grabbing' : 'grab',
                     userSelect: 'none', whiteSpace: 'nowrap',
-                    fontSize: `${fontSize}px`, lineHeight: 1.3, color: textColor,
+                    fontSize: `${fontSize * (viewport?.scale ?? 1)}px`, lineHeight: 1.3, color: textColor,
                     backgroundColor: showBg ? bgColor : 'rgba(0,0,0,0)',
                     padding: showBg ? '1px 4px' : '0',
                     borderRadius: showBg ? '3px' : '0',
@@ -350,6 +378,8 @@ export default function App() {
             </div>
           )}
         </div>
+        <input ref={fileInputRef} type="file" accept="application/pdf,.pdf"
+          className="hidden" onChange={handleFileInput} />
       </div>
 
       {/* ═══ Right panel (30%) ═══ */}
@@ -389,8 +419,9 @@ export default function App() {
                 'DownloadURL',
                 `application/pdf:${filename}:${API}/files/${encodeURIComponent(filename)}`
               )}
-              className="bg-gray-800 rounded-lg p-3 flex flex-col gap-2 border border-gray-700 cursor-grab active:cursor-grabbing"
-              title="Drag to desktop, Finder, or any app">
+              onClick={() => handleOpenFile(filename)}
+              className="bg-gray-800 rounded-lg p-3 flex flex-col gap-2 border border-gray-700 cursor-pointer active:cursor-grabbing"
+              title="Click to open in preview">
               <div className="flex items-center gap-2 pointer-events-none select-none">
                 <svg className="w-4 h-4 text-red-400 shrink-0" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/>
