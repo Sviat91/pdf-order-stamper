@@ -125,7 +125,7 @@ app.post('/api/decrypt', requireAuth, memUpload.single('file'), (req, res) => {
     return res.status(500).json({ error: 'Could not stage file' });
   }
 
-  const qpdf = spawn('qpdf', ['--decrypt', tmpIn, tmpOut]);
+  const qpdf = spawn('qpdf', ['--decrypt', '--compress-streams=y', '--object-streams=generate', tmpIn, tmpOut]);
   qpdf.on('error', () => { cleanup(); res.status(500).json({ error: 'qpdf is not available' }); });
   qpdf.on('close', (code) => {
     // qpdf: 0 = success, 3 = success with warnings
